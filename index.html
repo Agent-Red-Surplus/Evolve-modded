@@ -80,85 +80,28 @@
             let autoLoaded = false;
             let autoFetching = false;
             let autoBtn = null;
-            let isInjectingMod = false;
 
-            // Tracking sets for all timers and callbacks registered by the mod
-            const modIntervals = new Set();
-            const modTimeouts = new Set();
-            const modFunctions = new WeakSet();
+            // Direct hardware kill switch: flips the script's master toggle inside the DOM
+            const applyMasterKillSwitch = (enable) => {
+                const masterCheckbox = document.querySelector("#masterScriptToggle, input[id*='masterScriptToggle' i]");
+                if (masterCheckbox && masterCheckbox.checked !== enable) {
+                    masterCheckbox.checked = enable;
+                    masterCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
+                    masterCheckbox.dispatchEvent(new Event("input", { bubbles: true }));
+                    masterCheckbox.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+                }
 
-            // Helper to inspect stack traces
-            const isAutomationContext = (fn) => {
-                if (isInjectingMod) return true;
-                if (typeof fn === "function" && modFunctions.has(fn)) return true;
-                const stack = (new Error()).stack || "";
-                return (
-                    stack.includes("evolve_automation") ||
-                    stack.includes("evolve-automation") ||
-                    stack.includes("tampermonkey")
-                );
-            };
-
-            // 1. Intercept setInterval
-            const origSetInterval = window.setInterval;
-            window.setInterval = function(fn, delay, ...args) {
-                if (typeof fn === "function") {
-                    if (isAutomationContext(fn)) {
-                        modFunctions.add(fn);
-                        const gated = function(...innerArgs) {
-                            if (!autoEnabled) return;
-                            return fn.apply(this, innerArgs);
-                        };
-                        const id = origSetInterval.call(window, gated, delay, ...args);
-                        modIntervals.add(id);
-                        return id;
+                // If global settings object exists in window, flip it directly
+                try {
+                    if (window.evolveAutomation && typeof window.evolveAutomation === "object") {
+                        if (window.evolveAutomation.settings) {
+                            window.evolveAutomation.settings.masterScriptToggle = enable;
+                        }
                     }
-                }
-                return origSetInterval.call(window, fn, delay, ...args);
+                } catch (e) {}
             };
 
-            // 2. Intercept setTimeout (recursive loops)
-            const origSetTimeout = window.setTimeout;
-            window.setTimeout = function(fn, delay, ...args) {
-                if (typeof fn === "function") {
-                    if (isAutomationContext(fn)) {
-                        modFunctions.add(fn);
-                        const gated = function(...innerArgs) {
-                            if (!autoEnabled) return;
-                            return fn.apply(this, innerArgs);
-                        };
-                        const id = origSetTimeout.call(window, gated, delay, ...args);
-                        modTimeouts.add(id);
-                        return id;
-                    }
-                }
-                return origSetTimeout.call(window, fn, delay, ...args);
-            };
-
-            // 3. Intercept requestAnimationFrame
-            const origRAF = window.requestAnimationFrame;
-            window.requestAnimationFrame = function(fn) {
-                if (typeof fn === "function" && isAutomationContext(fn)) {
-                    modFunctions.add(fn);
-                    const gated = function(...innerArgs) {
-                        if (!autoEnabled) return;
-                        return fn.apply(this, innerArgs);
-                    };
-                    return origRAF.call(window, gated);
-                }
-                return origRAF.call(window, fn);
-            };
-
-            // 4. Intercept clicks triggered by automation
-            const origClick = HTMLElement.prototype.click;
-            HTMLElement.prototype.click = function(...args) {
-                if (!autoEnabled && isAutomationContext()) {
-                    return;
-                }
-                return origClick.apply(this, args);
-            };
-
-            // 5. Anti-scroll snap guard
+            // Anti-scroll snap guard
             const origScrollTo = window.scrollTo;
             window.scrollTo = function(x, y) {
                 if (typeof x === "object" && x !== null) {
@@ -198,7 +141,7 @@
                 return origFocus.call(this, safeOptions);
             };
 
-            // --- HIDE STYLES ---
+            // Hide/Show automation side controls
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
@@ -211,11 +154,13 @@
             `;
 
             const syncAutomationMasterSwitch = (enable) => {
+                applyMasterKillSwitch(enable);
+
                 if (!enable) {
                     const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
                     if (activeTab && /auto/i.test(activeTab.textContent)) {
                         const firstTab = document.querySelector('.b-tabs .tabs li a');
-                        if (firstTab) origClick.call(firstTab);
+                        if (firstTab) firstTab.click();
                     }
                 }
             };
@@ -258,24 +203,20 @@
                     .then(code => {
                         const s = document.createElement("script");
                         s.id = "evolve-automation-script";
-                        // Wrap script in an explicit named closure to ensure stack traces identify it
-                        const wrappedCode = `\n//# sourceURL=evolve_automation.user.js\n(() => {\n${code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "")}\n})();`;
-                        s.textContent = wrappedCode;
+                        s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
 
-                        isInjectingMod = true;
                         document.head.appendChild(s);
-                        setTimeout(() => {
-                            isInjectingMod = false;
-                        }, 500);
-
                         autoLoaded = true;
                         autoFetching = false;
+
+                        // Give script 400ms to mount its UI checkboxes, then set correct state
                         setTimeout(() => {
+                            syncAutomationMasterSwitch(autoEnabled);
                             if (!autoEnabled) {
                                 if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
-                                syncAutomationMasterSwitch(false);
                             }
                         }, 400);
+
                         updateAutoButton();
                     })
                     .catch(() => {
@@ -327,8 +268,18 @@
                 applySpeedWorker();
             };
 
+            // Periodic watchdog to keep masterScriptToggle in sync
+            setInterval(() => {
+                if (autoLoaded) {
+                    const masterCheckbox = document.querySelector("#masterScriptToggle, input[id*='masterScriptToggle' i]");
+                    if (masterCheckbox && masterCheckbox.checked !== autoEnabled) {
+                        applyMasterKillSwitch(autoEnabled);
+                    }
+                }
+            }, 1000);
+
             // Boot sequence
-            const bootTimer = origSetInterval.call(window, () => {
+            const bootTimer = setInterval(() => {
                 const versionLog = document.getElementById("versionLog");
                 const topBar = document.querySelector("#topBar");
                 const mainTab = document.querySelector(".b-tabs .tabs ul");
