@@ -19,7 +19,7 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Live Mod Loader (True No-Refresh Timer & DOM Isolation for Auto Mod) -->
+    <!-- Live Mod Loader (Complete DOM, Style, Timer & Global Cleanup for Auto Mod) -->
     <script>
         (() => {
             "use strict";
@@ -42,11 +42,12 @@
 
             let cachedAutoCode = null;
             let capturingAuto = false;
+            let captureWindowTimer = null;
             const autoIntervals = new Set();
             const autoTimeouts = new Set();
             const autoElements = new Set();
 
-            // Intercept timers while Auto Mod runs so we can stop every background loop on demand
+            // Intercept timers while Auto Mod executes or initializes
             const origSetInterval = window.setInterval;
             const origClearInterval = window.clearInterval;
             const origSetTimeout = window.setTimeout;
@@ -88,7 +89,7 @@
                 return origClearTimeout.call(window, id);
             };
 
-            // Track DOM nodes added while Auto Mod initializes so we can remove them cleanly
+            // Watch BOTH <head> (for injected <style>) and <body> (for tabs, panels, buttons)
             const domObserver = new MutationObserver((mutations) => {
                 if (!capturingAuto) return;
                 for (const m of mutations) {
@@ -135,46 +136,71 @@
             };
 
             const executeAutoCode = (code) => {
-                // Clean up any previous instance before running
                 stopAutomation();
                 autoEnabled = true;
                 setState("mod_enable_automation", true);
 
-                domObserver.observe(document.body, { childList: true, subtree: true });
+                // Start capturing right as the script runs
+                domObserver.observe(document.documentElement, { childList: true, subtree: true });
                 capturingAuto = true;
-
-                const oldScript = document.getElementById("evolve-automation-script");
-                if (oldScript) oldScript.remove();
 
                 const s = document.createElement("script");
                 s.id = "evolve-automation-script";
                 s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
                 document.head.appendChild(s);
 
-                // Keep capture active briefly for async startup timers, then stop capturing game timers
-                origSetTimeout.call(window, () => {
+                // Keep capture active for 3 seconds after execution to catch async UI renders
+                if (captureWindowTimer) origClearTimeout.call(window, captureWindowTimer);
+                captureWindowTimer = origSetTimeout.call(window, () => {
                     capturingAuto = false;
                     domObserver.disconnect();
-                }, 1500);
+                }, 3000);
             };
 
             const stopAutomation = () => {
                 autoEnabled = false;
                 setState("mod_enable_automation", false);
                 capturingAuto = false;
+                if (captureWindowTimer) origClearTimeout.call(window, captureWindowTimer);
                 domObserver.disconnect();
 
-                // Kill every interval and timeout created by Evolve Automation
+                // 1. Stop all timers started by Evolve Automation
                 autoIntervals.forEach(id => origClearInterval.call(window, id));
                 autoIntervals.clear();
                 autoTimeouts.forEach(id => origClearTimeout.call(window, id));
                 autoTimeouts.clear();
 
-                // Remove every UI element/tab injected by Evolve Automation
+                // 2. If user was viewing the Automation tab, switch back to Civics/first tab first
+                const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
+                if (activeTab && /auto/i.test(activeTab.textContent)) {
+                    const firstTab = document.querySelector(".b-tabs .tabs li:not([style*='display: none']) a");
+                    if (firstTab) firstTab.click();
+                }
+
+                // 3. Remove every tracked DOM node & style element injected by Evolve Automation
                 autoElements.forEach(el => {
                     if (el && el.parentNode) el.parentNode.removeChild(el);
                 });
                 autoElements.clear();
+
+                // 4. Fallback sweep for any remaining automation tabs/containers/styles
+                document.querySelectorAll('[id*="automation" i], [class*="automation" i]').forEach(el => {
+                    if (el.id !== "evolve-automation-script" && el.parentNode) {
+                        el.parentNode.removeChild(el);
+                    }
+                });
+                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
+                    if (/automation/i.test(li.textContent) && li.parentNode) {
+                        li.parentNode.removeChild(li);
+                    }
+                });
+
+                // 5. Clear any global flags Evolve Automation sets so re-enabling works cleanly
+                for (const key of Object.keys(window)) {
+                    if (/automation|evolveAuto/i.test(key)) {
+                        try { delete window[key]; } catch { window[key] = undefined; }
+                    }
+                }
 
                 const oldScript = document.getElementById("evolve-automation-script");
                 if (oldScript) oldScript.remove();
@@ -192,7 +218,7 @@
                         .then(r => r.text())
                         .then(code => {
                             cachedAutoCode = code;
-                            executeAutoCode(code);
+                            if (autoEnabled) executeAutoCode(code);
                         });
                 }
             };
