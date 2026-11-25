@@ -19,6 +19,11 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
+    <!-- Scroll safeguard -->
+    <style>
+        html, body { overflow-y: auto !important; }
+    </style>
+
     <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle) -->
     <script>
         (() => {
@@ -44,30 +49,15 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // --- UPDATED DISABLE LOGIC START ---
-            const baselineNodes = new WeakSet();
+            // --- DISABLE LOGIC (narrowed: no more tagging of game nodes) ---
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
-                [data-auto-mod-node="true"],
-                [id*="automation" i],
-                [class*="automation" i] {
+                [id^="script_"],
+                [class*="script_"] {
                     display: none !important;
                 }
             `;
-
-            // Tag every element added to the page after Evolve Automation is injected
-            const tagAutomationNodes = () => {
-                document.querySelectorAll("body *").forEach(el => {
-                    if (
-                        !baselineNodes.has(el) &&
-                        !el.closest("#mod-top-bar-wrapper") &&
-                        el.id !== "customSpeed"
-                    ) {
-                        el.setAttribute("data-auto-mod-node", "true");
-                    }
-                });
-            };
 
             // Freeze Evolve Automation's timers and clicks while autoEnabled is false
             const origSetInterval = window.setInterval;
@@ -97,18 +87,16 @@
             };
 
             const syncAutomationMasterSwitch = (enable) => {
-                tagAutomationNodes();
-
-                // If currently viewing an Automation tab when disabling, switch back to the first visible game tab
+                // If an Automation tab is active when disabling, go back to the first game tab
                 if (!enable) {
                     const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
-                    if (activeTab && (activeTab.hasAttribute("data-auto-mod-node") || /auto/i.test(activeTab.textContent))) {
-                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-auto-mod-node="true"]) a');
+                    if (activeTab && /auto/i.test(activeTab.textContent)) {
+                        const firstTab = document.querySelector(".b-tabs .tabs li a");
                         if (firstTab) origClick.call(firstTab);
                     }
                 }
             };
-            // --- UPDATED DISABLE LOGIC END ---
+            // --- DISABLE LOGIC END ---
 
             const updateAutoButton = () => {
                 if (!autoBtn) return;
@@ -142,9 +130,6 @@
                     return;
                 }
 
-                // Snapshot existing game DOM nodes right before injecting Automation
-                document.querySelectorAll("body *").forEach(el => baselineNodes.add(el));
-
                 autoFetching = true;
                 updateAutoButton();
                 fetch("https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=" + Date.now())
@@ -157,7 +142,6 @@
                         autoLoaded = true;
                         autoFetching = false;
                         setTimeout(() => {
-                            tagAutomationNodes();
                             if (!autoEnabled) {
                                 if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
                                 syncAutomationMasterSwitch(false);
