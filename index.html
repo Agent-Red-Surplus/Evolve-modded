@@ -53,50 +53,44 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // Context flag that tracks whenever Evolve Automation code or any timer it spawns is executing
-            let inAutoContext = false;
-            const pausedAutoCallbacks = [];
-
-            const wrapAutoCallback = (fn) => {
-                if (typeof fn !== "function") return fn;
-                return function(...innerArgs) {
-                    if (!autoEnabled) {
-                        // Queue the paused tick so resuming Auto:ON restarts its loop seamlessly
-                        pausedAutoCallbacks.push(() => fn.apply(this, innerArgs));
-                        return;
+            // Directly toggle Evolve Automation's own built-in master switch & UI checkboxes
+            const toggleNativeAutomation = (enable) => {
+                // 1. Update Evolve Automation's saved settings object in localStorage
+                for (const key of Object.keys(window.localStorage)) {
+                    if (/auto/i.test(key) && !key.startsWith("mod_")) {
+                        try {
+                            const data = JSON.parse(window.localStorage.getItem(key));
+                            if (data && typeof data === "object") {
+                                if ("enabled" in data) data.enabled = enable;
+                                if ("master" in data) data.master = enable;
+                                if ("active" in data) data.active = enable;
+                                window.localStorage.setItem(key, JSON.stringify(data));
+                            }
+                        } catch {}
                     }
-                    const prev = inAutoContext;
-                    inAutoContext = true;
-                    try {
-                        return fn.apply(this, innerArgs);
-                    } finally {
-                        inAutoContext = prev;
+                }
+
+                // 2. Click Evolve Automation's own master checkbox in the UI (inside Automation tab or sidebar box)
+                const candidates = document.querySelectorAll(
+                    '#automation input[type="checkbox"], [id*="auto" i] input[type="checkbox"], .automation input[type="checkbox"]'
+                );
+                if (candidates.length > 0) {
+                    const masterBox = candidates[0];
+                    if (masterBox.checked !== enable) {
+                        masterBox.click();
                     }
-                };
-            };
-
-            const origSetInterval = window.setInterval;
-            window.setInterval = function(fn, delay, ...args) {
-                if (inAutoContext) {
-                    return origSetInterval.call(window, wrapAutoCallback(fn), delay, ...args);
                 }
-                return origSetInterval.call(window, fn, delay, ...args);
-            };
 
-            const origSetTimeout = window.setTimeout;
-            window.setTimeout = function(fn, delay, ...args) {
-                if (inAutoContext) {
-                    return origSetTimeout.call(window, wrapAutoCallback(fn), delay, ...args);
-                }
-                return origSetTimeout.call(window, fn, delay, ...args);
-            };
-
-            const origClick = HTMLElement.prototype.click;
-            HTMLElement.prototype.click = function(...args) {
-                if (!autoEnabled && inAutoContext) {
-                    return;
-                }
-                return origClick.apply(this, args);
+                // 3. Also check labels/switches explicitly labeled "Enabled" or "Automation"
+                document.querySelectorAll("label, .switch, .b-checkbox").forEach(lbl => {
+                    const txt = lbl.textContent.trim().toLowerCase();
+                    if (txt === "enabled" || txt === "enable automation" || txt === "automation") {
+                        const input = lbl.querySelector('input[type="checkbox"]') || lbl.previousElementSibling;
+                        if (input && input.type === "checkbox" && input.checked !== enable) {
+                            input.click();
+                        }
+                    }
+                });
             };
 
             const updateAutoButton = () => {
@@ -115,17 +109,13 @@
                 autoEnabled = enable;
                 setState("mod_enable_automation", enable);
 
-                if (!enable) {
+                if (autoLoaded) {
+                    toggleNativeAutomation(enable);
                     updateAutoButton();
                     return;
                 }
 
-                if (autoLoaded) {
-                    // Resume any setTimeout chains that were paused while Auto was OFF
-                    while (pausedAutoCallbacks.length > 0) {
-                        const resumeFn = pausedAutoCallbacks.shift();
-                        origSetTimeout.call(window, resumeFn, 0);
-                    }
+                if (!enable) {
                     updateAutoButton();
                     return;
                 }
@@ -138,14 +128,10 @@
                         const s = document.createElement("script");
                         s.id = "evolve-automation-script";
                         s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
-                        inAutoContext = true;
-                        try {
-                            document.head.appendChild(s);
-                        } finally {
-                            inAutoContext = false;
-                        }
+                        document.head.appendChild(s);
                         autoLoaded = true;
                         autoFetching = false;
+                        setTimeout(() => toggleNativeAutomation(autoEnabled), 300);
                         updateAutoButton();
                     })
                     .catch(() => {
@@ -170,7 +156,7 @@
                 }
                 oldPost.apply(this, args);
                 if (fromScript) {
-                    origSetTimeout.call(window, () => {
+                    setTimeout(() => {
                         if (vueMethod) vueMethod.pause();
                     }, 0);
                     fromScript = false;
@@ -198,7 +184,7 @@
             };
 
             // Boot sequence: Wait for game UI, load Auto Mod FIRST, then Speed Mod & Top-Bar Menu
-            const bootTimer = origSetInterval.call(window, () => {
+            const bootTimer = setInterval(() => {
                 const versionLog = document.getElementById("versionLog");
                 const topBar = document.querySelector("#topBar");
                 const mainTab = document.querySelector(".b-tabs .tabs ul");
@@ -213,7 +199,7 @@
                 }
 
                 // Step 2: Initialize Speed Multiplier right after
-                origSetTimeout.call(window, () => {
+                setTimeout(() => {
                     speedSpan = document.createElement("span");
                     speedSpan.id = "customSpeed";
                     speedSpan.className = "version";
