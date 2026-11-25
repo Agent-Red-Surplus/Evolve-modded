@@ -19,7 +19,7 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Live Mod Loader (No-Refresh Toggle + Auto-First Ordering) -->
+    <!-- Live Mod Loader (True No-Refresh Timer & DOM Isolation for Auto Mod) -->
     <script>
         (() => {
             "use strict";
@@ -40,13 +40,72 @@
             let menuVisible = getState("mod_menu_visible", true);
             let savedSpeed = getState("customSpeed", 1);
 
-            let autoInjected = false;
+            let cachedAutoCode = null;
+            let capturingAuto = false;
+            const autoIntervals = new Set();
+            const autoTimeouts = new Set();
+            const autoElements = new Set();
+
+            // Intercept timers while Auto Mod runs so we can stop every background loop on demand
+            const origSetInterval = window.setInterval;
+            const origClearInterval = window.clearInterval;
+            const origSetTimeout = window.setTimeout;
+            const origClearTimeout = window.clearTimeout;
+
+            window.setInterval = function(fn, delay, ...args) {
+                if (capturingAuto) {
+                    const wrapped = function(...innerArgs) {
+                        if (!autoEnabled) return;
+                        return typeof fn === "function" ? fn.apply(this, innerArgs) : eval(fn);
+                    };
+                    const id = origSetInterval.call(window, wrapped, delay, ...args);
+                    autoIntervals.add(id);
+                    return id;
+                }
+                return origSetInterval.call(window, fn, delay, ...args);
+            };
+
+            window.clearInterval = function(id) {
+                autoIntervals.delete(id);
+                return origClearInterval.call(window, id);
+            };
+
+            window.setTimeout = function(fn, delay, ...args) {
+                if (capturingAuto) {
+                    const wrapped = function(...innerArgs) {
+                        if (!autoEnabled) return;
+                        return typeof fn === "function" ? fn.apply(this, innerArgs) : eval(fn);
+                    };
+                    const id = origSetTimeout.call(window, wrapped, delay, ...args);
+                    autoTimeouts.add(id);
+                    return id;
+                }
+                return origSetTimeout.call(window, fn, delay, ...args);
+            };
+
+            window.clearTimeout = function(id) {
+                autoTimeouts.delete(id);
+                return origClearTimeout.call(window, id);
+            };
+
+            // Track DOM nodes added while Auto Mod initializes so we can remove them cleanly
+            const domObserver = new MutationObserver((mutations) => {
+                if (!capturingAuto) return;
+                for (const m of mutations) {
+                    for (const node of m.addedNodes) {
+                        if (node.nodeType === 1 && node.id !== "evolve-automation-script") {
+                            autoElements.add(node);
+                        }
+                    }
+                }
+            });
+
+            // Hook Worker.prototype.postMessage early, keeping multiplier at 1 until Speed is ready
             let speedReady = false;
             let fromScript = false;
             let vueMethod = null;
             let speedSpan = null;
 
-            // Hook Worker.prototype.postMessage early, but keep active multiplier at 1 until Speed is ready
             const oldPost = Worker.prototype.postMessage;
             Worker.prototype.postMessage = function(...args) {
                 const activeMultiplier = (speedEnabled && speedReady) ? savedSpeed : 1;
@@ -55,7 +114,7 @@
                 }
                 oldPost.apply(this, args);
                 if (fromScript) {
-                    setTimeout(() => {
+                    origSetTimeout.call(window, () => {
                         if (vueMethod) vueMethod.pause();
                     }, 0);
                     fromScript = false;
@@ -75,45 +134,69 @@
                 speedSpan.textContent = `speed ×${savedSpeed}`;
             };
 
-            // Toggle Evolve Automation UI & execution live without reloading
-            const setAutomationLive = (enable) => {
-                autoEnabled = enable;
-                setState("mod_enable_automation", enable);
+            const executeAutoCode = (code) => {
+                // Clean up any previous instance before running
+                stopAutomation();
+                autoEnabled = true;
+                setState("mod_enable_automation", true);
 
-                if (enable && !autoInjected) {
-                    autoInjected = true;
-                    fetch("https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=" + Date.now())
-                        .then(r => r.text())
-                        .then(t => {
-                            const s = document.createElement("script");
-                            s.id = "evolve-automation-script";
-                            s.textContent = t.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
-                            document.head.appendChild(s);
-                            console.log("Evolve Automation Injected!");
-                        });
-                    return;
-                }
+                domObserver.observe(document.body, { childList: true, subtree: true });
+                capturingAuto = true;
 
-                // Show/hide Automation tabs & pause/resume its master loop if already injected
-                document.querySelectorAll('[id*="automation"], [id*="auto_"], .automation-tab, [data-automation]').forEach(el => {
-                    el.style.display = enable ? "" : "none";
-                });
-                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
-                    if (/auto/i.test(li.textContent)) {
-                        li.style.display = enable ? "" : "none";
-                    }
-                });
-                // Flip internal Vue pause/enabled flag if exposed by Evolve Automation
-                try {
-                    const autoEl = document.querySelector("#automation, [id*='automation']");
-                    if (autoEl && autoEl.__vue__ && autoEl.__vue__._data) {
-                        if ("enabled" in autoEl.__vue__._data) autoEl.__vue__._data.enabled = enable;
-                        if ("paused" in autoEl.__vue__._data) autoEl.__vue__._data.paused = !enable;
-                    }
-                } catch {}
+                const oldScript = document.getElementById("evolve-automation-script");
+                if (oldScript) oldScript.remove();
+
+                const s = document.createElement("script");
+                s.id = "evolve-automation-script";
+                s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
+                document.head.appendChild(s);
+
+                // Keep capture active briefly for async startup timers, then stop capturing game timers
+                origSetTimeout.call(window, () => {
+                    capturingAuto = false;
+                    domObserver.disconnect();
+                }, 1500);
             };
 
-            // Toggle Speed Multiplier live without reloading
+            const stopAutomation = () => {
+                autoEnabled = false;
+                setState("mod_enable_automation", false);
+                capturingAuto = false;
+                domObserver.disconnect();
+
+                // Kill every interval and timeout created by Evolve Automation
+                autoIntervals.forEach(id => origClearInterval.call(window, id));
+                autoIntervals.clear();
+                autoTimeouts.forEach(id => origClearTimeout.call(window, id));
+                autoTimeouts.clear();
+
+                // Remove every UI element/tab injected by Evolve Automation
+                autoElements.forEach(el => {
+                    if (el && el.parentNode) el.parentNode.removeChild(el);
+                });
+                autoElements.clear();
+
+                const oldScript = document.getElementById("evolve-automation-script");
+                if (oldScript) oldScript.remove();
+            };
+
+            const setAutomationLive = (enable) => {
+                if (!enable) {
+                    stopAutomation();
+                    return;
+                }
+                if (cachedAutoCode) {
+                    executeAutoCode(cachedAutoCode);
+                } else {
+                    fetch("https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=" + Date.now())
+                        .then(r => r.text())
+                        .then(code => {
+                            cachedAutoCode = code;
+                            executeAutoCode(code);
+                        });
+                }
+            };
+
             const setSpeedLive = (enable) => {
                 speedEnabled = enable;
                 setState("mod_enable_speed", enable);
@@ -121,23 +204,23 @@
                 applySpeedWorker();
             };
 
-            // Wait for game tabs to render, load Auto Mod FIRST, then initialize Speed Mod & Controls
-            const bootTimer = setInterval(() => {
+            // Wait for game tabs to mount, load Auto Mod FIRST, then Speed Mod & Top-Bar Menu
+            const bootTimer = origSetInterval.call(window, () => {
                 const versionLog = document.getElementById("versionLog");
                 const topBar = document.querySelector("#topBar");
                 const mainTab = document.querySelector(".b-tabs .tabs ul");
                 if (!versionLog || !topBar || !topBar.__vue__ || !mainTab) return;
-                clearInterval(bootTimer);
+                origClearInterval.call(window, bootTimer);
 
                 vueMethod = topBar.__vue__;
 
-                // Step 1: Load Evolve Automation FIRST if enabled
+                // Step 1: Load Evolve Automation FIRST
                 if (autoEnabled) {
                     setAutomationLive(true);
                 }
 
-                // Step 2: Initialize Speed Multiplier right after Auto Mod starts
-                setTimeout(() => {
+                // Step 2: Initialize Speed Multiplier right after
+                origSetTimeout.call(window, () => {
                     speedSpan = document.createElement("span");
                     speedSpan.id = "customSpeed";
                     speedSpan.className = "version";
@@ -156,7 +239,7 @@
                     speedReady = true;
                     updateSpeedUI();
                     if (speedEnabled) applySpeedWorker();
-                }, 400);
+                }, 500);
 
                 // Step 3: Build Top-Bar Show/Hide Menu & Live Toggles
                 const wrapper = document.createElement("span");
