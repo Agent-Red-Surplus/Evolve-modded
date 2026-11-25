@@ -19,7 +19,16 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle) -->
+    <!-- Enable Scrolling on Resource Sidebar so Automation + is Always Reachable -->
+    <style>
+        #resources {
+            max-height: calc(100vh - 3.5rem) !important;
+            overflow-y: auto !important;
+            padding-bottom: 1.5rem !important;
+        }
+    </style>
+
+    <!-- Live Mod Loader -->
     <script>
         (() => {
             "use strict";
@@ -43,31 +52,6 @@
             let autoLoaded = false;
             let autoFetching = false;
             let autoBtn = null;
-
-            // --- UPDATED DISABLE LOGIC START ---
-            const baselineNodes = new WeakSet();
-            const hideStyle = document.createElement("style");
-            hideStyle.id = "mod-hide-automation-style";
-            hideStyle.textContent = `
-                [data-auto-mod-node="true"],
-                [id*="automation" i],
-                [class*="automation" i] {
-                    display: none !important;
-                }
-            `;
-
-            // Tag every element added to the page after Evolve Automation is injected
-            const tagAutomationNodes = () => {
-                document.querySelectorAll("body *").forEach(el => {
-                    if (
-                        !baselineNodes.has(el) &&
-                        !el.closest("#mod-top-bar-wrapper") &&
-                        el.id !== "customSpeed"
-                    ) {
-                        el.setAttribute("data-auto-mod-node", "true");
-                    }
-                });
-            };
 
             // Freeze Evolve Automation's timers and clicks while autoEnabled is false
             const origSetInterval = window.setInterval;
@@ -96,20 +80,6 @@
                 return origClick.apply(this, args);
             };
 
-            const syncAutomationMasterSwitch = (enable) => {
-                tagAutomationNodes();
-
-                // If currently viewing an Automation tab when disabling, switch back to the first visible game tab
-                if (!enable) {
-                    const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
-                    if (activeTab && (activeTab.hasAttribute("data-auto-mod-node") || /auto/i.test(activeTab.textContent))) {
-                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-auto-mod-node="true"]) a');
-                        if (firstTab) origClick.call(firstTab);
-                    }
-                }
-            };
-            // --- UPDATED DISABLE LOGIC END ---
-
             const updateAutoButton = () => {
                 if (!autoBtn) return;
                 if (autoFetching) {
@@ -126,24 +96,10 @@
                 autoEnabled = enable;
                 setState("mod_enable_automation", enable);
 
-                if (!enable) {
-                    if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
-                    syncAutomationMasterSwitch(false);
+                if (!enable || autoLoaded) {
                     updateAutoButton();
                     return;
                 }
-
-                // Enabling
-                if (hideStyle.parentNode) hideStyle.parentNode.removeChild(hideStyle);
-
-                if (autoLoaded) {
-                    syncAutomationMasterSwitch(true);
-                    updateAutoButton();
-                    return;
-                }
-
-                // Snapshot existing game DOM nodes right before injecting Automation
-                document.querySelectorAll("body *").forEach(el => baselineNodes.add(el));
 
                 autoFetching = true;
                 updateAutoButton();
@@ -156,13 +112,6 @@
                         document.head.appendChild(s);
                         autoLoaded = true;
                         autoFetching = false;
-                        setTimeout(() => {
-                            tagAutomationNodes();
-                            if (!autoEnabled) {
-                                if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
-                                syncAutomationMasterSwitch(false);
-                            }
-                        }, 400);
                         updateAutoButton();
                     })
                     .catch(() => {
