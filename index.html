@@ -19,7 +19,7 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Live Mod Loader (Preserves Resource Dropdown + Clean Disable) -->
+    <!-- Live Mod Loader -->
     <script>
         (() => {
             "use strict";
@@ -44,7 +44,7 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // --- UPDATED DISABLE LOGIC START ---
+            // Style to hide Automation UI when toggled off
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
@@ -53,52 +53,7 @@
                 }
             `;
 
-            // Find only Evolve Automation's UI elements (tabs, settings panel, and resource quick-toggle dropdown)
-            const toggleAutomationUI = (show) => {
-                // 1. Main settings tab & content
-                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
-                    if (/automation/i.test(li.textContent)) {
-                        if (show) li.removeAttribute("data-ea-hidden");
-                        else li.setAttribute("data-ea-hidden", "true");
-                    }
-                });
-
-                // 2. Automation panels & quick-enable dropdown under #resources
-                document.querySelectorAll('[id*="automation" i], [id*="auto_" i], #resources .dropdown, #resources select').forEach(el => {
-                    // Skip native game elements inside #resources (like market/crate controls if any) by checking for EA markers
-                    const isNativeResource = el.closest("#resStorage") || el.closest("#market") || el.id === "resources";
-                    if (isNativeResource) return;
-
-                    if (show) el.removeAttribute("data-ea-hidden");
-                    else el.setAttribute("data-ea-hidden", "true");
-                });
-
-                // 3. Switch away from Automation tab if user is viewing it when disabling
-                if (!show) {
-                    const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
-                    if (activeTab && /automation/i.test(activeTab.textContent)) {
-                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-ea-hidden="true"]) a');
-                        if (firstTab) origClick.call(firstTab);
-                    }
-                }
-            };
-
-            // Gate Evolve Automation's timers and clicks while autoEnabled is false
-            const origSetInterval = window.setInterval;
-            window.setInterval = function(fn, delay, ...args) {
-                if (typeof fn === "function") {
-                    const stack = (new Error()).stack || "";
-                    if (stack.includes("evolve-automation-script") || stack.includes("eval")) {
-                        const gatedFn = function(...innerArgs) {
-                            if (!autoEnabled) return;
-                            return fn.apply(this, innerArgs);
-                        };
-                        return origSetInterval.call(window, gatedFn, delay, ...args);
-                    }
-                }
-                return origSetInterval.call(window, fn, delay, ...args);
-            };
-
+            // Block Evolve Automation's automated clicks when disabled
             const origClick = HTMLElement.prototype.click;
             HTMLElement.prototype.click = function(...args) {
                 if (!autoEnabled) {
@@ -109,7 +64,32 @@
                 }
                 return origClick.apply(this, args);
             };
-            // --- UPDATED DISABLE LOGIC END ---
+
+            const toggleAutomationUI = (show) => {
+                // 1. Automation tab in main nav
+                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
+                    if (/automation/i.test(li.textContent)) {
+                        if (show) li.removeAttribute("data-ea-hidden");
+                        else li.setAttribute("data-ea-hidden", "true");
+                    }
+                });
+
+                // 2. Automation panels & quick-enable dropdown under #resources
+                document.querySelectorAll('[id*="automation" i], [id*="auto_" i], #resources > div:not(#resStorage):not(#market)').forEach(el => {
+                    if (el.id === "resources") return;
+                    if (show) el.removeAttribute("data-ea-hidden");
+                    else el.setAttribute("data-ea-hidden", "true");
+                });
+
+                // 3. Switch away from Automation tab if active when disabling
+                if (!show) {
+                    const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
+                    if (activeTab && /automation/i.test(activeTab.textContent)) {
+                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-ea-hidden="true"]) a');
+                        if (firstTab) origClick.call(firstTab);
+                    }
+                }
+            };
 
             const updateAutoButton = () => {
                 if (!autoBtn) return;
@@ -134,7 +114,6 @@
                     return;
                 }
 
-                // Enabling
                 if (hideStyle.parentNode) hideStyle.parentNode.removeChild(hideStyle);
 
                 if (autoLoaded) {
@@ -170,7 +149,7 @@
                     });
             };
 
-            // Speed Multiplier Setup (runs after Auto Mod starts)
+            // Speed Multiplier Setup
             let speedReady = false;
             let fromScript = false;
             let vueMethod = null;
@@ -212,12 +191,12 @@
             };
 
             // Boot sequence: Wait for game UI, load Auto Mod FIRST, then Speed Mod & Top-Bar Menu
-            const bootTimer = origSetInterval.call(window, () => {
+            const bootTimer = setInterval(() => {
                 const versionLog = document.getElementById("versionLog");
                 const topBar = document.querySelector("#topBar");
                 const mainTab = document.querySelector(".b-tabs .tabs ul");
                 if (!versionLog || !topBar || !topBar.__vue__ || !mainTab) return;
-                origClearInterval.call(window, bootTimer);
+                clearInterval(bootTimer);
 
                 vueMethod = topBar.__vue__;
 
