@@ -44,27 +44,47 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // Style sheet that cleanly hides Automation UI without fighting Vue's virtual DOM
+            // --- UPDATED DISABLE LOGIC START ---
+            const baselineNodes = new WeakSet();
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
+                [data-auto-mod-node="true"],
                 [id*="automation" i],
-                [class*="automation" i],
-                .b-tabs .tabs li[data-is-automation="true"] {
+                [class*="automation" i] {
                     display: none !important;
                 }
             `;
 
-            // Tag any tab containing "Automation" so CSS hides it permanently while disabled
-            const tagAutomationTabs = () => {
-                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
-                    if (/automation/i.test(li.textContent)) {
-                        li.setAttribute("data-is-automation", "true");
+            // Tag every element added to the page after Evolve Automation is injected
+            const tagAutomationNodes = () => {
+                document.querySelectorAll("body *").forEach(el => {
+                    if (
+                        !baselineNodes.has(el) &&
+                        !el.closest("#mod-top-bar-wrapper") &&
+                        el.id !== "customSpeed"
+                    ) {
+                        el.setAttribute("data-auto-mod-node", "true");
                     }
                 });
             };
 
-            // Intercept programmatic .click() calls from Evolve Automation while disabled
+            // Freeze Evolve Automation's timers and clicks while autoEnabled is false
+            const origSetInterval = window.setInterval;
+            window.setInterval = function(fn, delay, ...args) {
+                if (typeof fn === "function") {
+                    const stack = (new Error()).stack || "";
+                    if (stack.includes("evolve-automation-script") || stack.includes("eval")) {
+                        const gatedFn = function(...innerArgs) {
+                            if (!autoEnabled) return;
+                            return fn.apply(this, innerArgs);
+                        };
+                        return origSetInterval.call(window, gatedFn, delay, ...args);
+                    }
+                }
+                return origSetInterval.call(window, fn, delay, ...args);
+            };
+
             const origClick = HTMLElement.prototype.click;
             HTMLElement.prototype.click = function(...args) {
                 if (!autoEnabled) {
@@ -76,33 +96,19 @@
                 return origClick.apply(this, args);
             };
 
-            // Toggle Evolve Automation's own master switch inside its Vue instance / UI
             const syncAutomationMasterSwitch = (enable) => {
-                tagAutomationTabs();
+                tagAutomationNodes();
 
-                // If user is currently on the Automation tab when disabling, switch to first tab
+                // If currently viewing an Automation tab when disabling, switch back to the first visible game tab
                 if (!enable) {
                     const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
-                    if (activeTab && /automation/i.test(activeTab.textContent)) {
-                        const firstTab = document.querySelector(".b-tabs .tabs li:not([data-is-automation='true']) a");
+                    if (activeTab && (activeTab.hasAttribute("data-auto-mod-node") || /auto/i.test(activeTab.textContent))) {
+                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-auto-mod-node="true"]) a');
                         if (firstTab) origClick.call(firstTab);
                     }
                 }
-
-                // Toggle Evolve Automation's built-in "Enable Automation" checkbox/Vue state
-                const autoContainer = document.querySelector('[id*="automation" i]');
-                if (autoContainer) {
-                    if (autoContainer.__vue__ && autoContainer.__vue__._data) {
-                        const d = autoContainer.__vue__._data;
-                        if (d.s && typeof d.s.enabled === "boolean") d.s.enabled = enable;
-                        if (typeof d.enabled === "boolean") d.enabled = enable;
-                    }
-                    const masterCheckbox = autoContainer.querySelector('input[type="checkbox"]');
-                    if (masterCheckbox && masterCheckbox.checked !== enable) {
-                        origClick.call(masterCheckbox);
-                    }
-                }
             };
+            // --- UPDATED DISABLE LOGIC END ---
 
             const updateAutoButton = () => {
                 if (!autoBtn) return;
@@ -136,7 +142,9 @@
                     return;
                 }
 
-                // First-time load
+                // Snapshot existing game DOM nodes right before injecting Automation
+                document.querySelectorAll("body *").forEach(el => baselineNodes.add(el));
+
                 autoFetching = true;
                 updateAutoButton();
                 fetch("https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=" + Date.now())
@@ -149,12 +157,12 @@
                         autoLoaded = true;
                         autoFetching = false;
                         setTimeout(() => {
-                            tagAutomationTabs();
+                            tagAutomationNodes();
                             if (!autoEnabled) {
                                 if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
                                 syncAutomationMasterSwitch(false);
                             }
-                        }, 300);
+                        }, 400);
                         updateAutoButton();
                     })
                     .catch(() => {
@@ -207,7 +215,7 @@
             };
 
             // Boot sequence: Wait for game UI, load Auto Mod FIRST, then Speed Mod & Top-Bar Menu
-            const bootTimer = setInterval(() => {
+            const bootTimer = origSetInterval.call(window, () => {
                 const versionLog = document.getElementById("versionLog");
                 const topBar = document.querySelector("#topBar");
                 const mainTab = document.querySelector(".b-tabs .tabs ul");
@@ -245,6 +253,7 @@
 
                 // Step 3: Build Top-Bar Show/Hide Menu & Single-Click Toggles
                 const wrapper = document.createElement("span");
+                wrapper.id = "mod-top-bar-wrapper";
                 wrapper.className = "version";
                 wrapper.style.marginRight = "0.75rem";
                 wrapper.style.display = "inline-flex";
