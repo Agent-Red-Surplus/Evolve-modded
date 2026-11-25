@@ -19,7 +19,7 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Mod Manager & Speed Multiplier (Runs before main.js to hook game Worker) -->
+    <!-- Mod Manager, Tampermonkey Shims & Speed Multiplier -->
     <script>
         (() => {
             "use strict";
@@ -33,6 +33,22 @@
             };
             const setModState = (key, val) => {
                 window.localStorage.setItem(key, JSON.stringify(val));
+            };
+
+            // Tampermonkey API polyfills required by Evolve Automation
+            window.unsafeWindow = window;
+            window.GM_info = { script: { version: "local" } };
+            window.GM_getValue = (key, def) => getModState("ea_gm_" + key, def);
+            window.GM_setValue = (key, val) => setModState("ea_gm_" + key, val);
+            window.GM_deleteValue = (key) => window.localStorage.removeItem("ea_gm_" + key);
+            window.GM_listValues = () => Object.keys(window.localStorage)
+                .filter(k => k.startsWith("ea_gm_"))
+                .map(k => k.slice(6));
+            window.GM_addStyle = (css) => {
+                const style = document.createElement("style");
+                style.textContent = css;
+                document.head.appendChild(style);
+                return style;
             };
 
             window.__evolveMods = {
@@ -139,56 +155,8 @@
                 transform: rotate(360deg);
             }
         }
-        #mod-control-box {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            z-index: 9999;
-            background: rgba(25, 25, 30, 0.92);
-            color: #f0f0f0;
-            border: 1px solid #555;
-            border-radius: 6px;
-            padding: 6px 10px;
-            font-family: 'Lato', sans-serif;
-            font-size: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-        }
-        #mod-control-box summary {
-            cursor: pointer;
-            font-weight: bold;
-            user-select: none;
-        }
-        #mod-control-panel {
-            margin-top: 6px;
-            padding-top: 6px;
-            border-top: 1px solid #444;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-        #mod-control-panel label {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-        }
     </style>
     <div class="loading"><div class="lds-dual-ring"></div></div>
-
-    <!-- On-Demand Mod Toggle Panel -->
-    <details id="mod-control-box">
-        <summary>Mods</summary>
-        <div id="mod-control-panel">
-            <label>
-                <input type="checkbox" id="toggle-mod-automation">
-                Evolve Automation
-            </label>
-            <label>
-                <input type="checkbox" id="toggle-mod-speed">
-                Speed Multiplier
-            </label>
-        </div>
-    </details>
 
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-CPC46V71CB"></script>
     <script>
@@ -198,34 +166,97 @@
         gtag('config', 'G-CPC46V71CB');
     </script>
 
-    <!-- Load Evolve Automation & Wire Up Toggles -->
+    <!-- Load Evolve Automation & Mount Mod Toggle Outside Game UI -->
     <script>
         window.addEventListener('load', () => {
             const mods = window.__evolveMods;
+
+            // Mount control box directly onto <html> so Vue doesn't overwrite or block it
+            const box = document.createElement('div');
+            box.id = 'mod-control-box';
+            box.style.cssText = [
+                'position: fixed',
+                'bottom: 12px',
+                'right: 12px',
+                'z-index: 2147483647',
+                'background: #1e1e24',
+                'color: #f0f0f0',
+                'border: 1px solid #666',
+                'border-radius: 6px',
+                'padding: 6px 10px',
+                'font-family: Lato, sans-serif',
+                'font-size: 12px',
+                'box-shadow: 0 2px 10px rgba(0,0,0,0.6)',
+                'pointer-events: auto'
+            ].join(';');
+
+            box.innerHTML = `
+                <div id="mod-control-header" style="cursor:pointer;font-weight:bold;user-select:none;">Mods ▲</div>
+                <div id="mod-control-panel" style="display:none;margin-top:6px;padding-top:6px;border-top:1px solid #444;flex-direction:column;gap:6px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">
+                        <input type="checkbox" id="toggle-mod-automation">
+                        <span>Evolve Automation</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">
+                        <input type="checkbox" id="toggle-mod-speed">
+                        <span>Speed Multiplier</span>
+                    </label>
+                </div>
+            `;
+            document.documentElement.appendChild(box);
+
+            const header = document.getElementById('mod-control-header');
+            const panel = document.getElementById('mod-control-panel');
             const autoBox = document.getElementById('toggle-mod-automation');
             const speedBox = document.getElementById('toggle-mod-speed');
 
             autoBox.checked = mods.automation;
             speedBox.checked = mods.speed;
 
+            header.addEventListener('click', () => {
+                const isOpen = panel.style.display === 'flex';
+                panel.style.display = isOpen ? 'none' : 'flex';
+                header.textContent = isOpen ? 'Mods ▲' : 'Mods ▼';
+            });
+
+            const reloadWithSave = () => {
+                if (typeof window.exportGame === 'function') {
+                    try { window.exportGame(); } catch {}
+                }
+                window.location.reload();
+            };
+
             autoBox.addEventListener('change', (e) => {
                 mods.setModState('mod_enable_automation', e.target.checked);
-                window.location.reload();
+                reloadWithSave();
             });
 
             speedBox.addEventListener('change', (e) => {
                 mods.setModState('mod_enable_speed', e.target.checked);
-                window.location.reload();
+                reloadWithSave();
             });
 
+            // Wait until #versionLog exists (game finished mounting) before injecting Automation
             if (mods.automation) {
-                fetch('https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=' + Date.now())
-                    .then(r => r.text())
-                    .then(code => {
-                        const s = document.createElement('script');
-                        s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, '');
-                        document.head.appendChild(s);
-                    });
+                const waitForGame = setInterval(() => {
+                    if (!document.getElementById('versionLog')) return;
+                    clearInterval(waitForGame);
+
+                    fetch('https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=' + Date.now())
+                        .then(r => {
+                            if (!r.ok) throw new Error('HTTP ' + r.status);
+                            return r.text();
+                        })
+                        .then(code => {
+                            const s = document.createElement('script');
+                            s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, '');
+                            document.head.appendChild(s);
+                        })
+                        .catch(err => {
+                            header.textContent = 'Mods (Auto blocked) ▲';
+                            console.error('Failed to load Evolve Automation:', err);
+                        });
+                }, 200);
             }
         });
     </script>
