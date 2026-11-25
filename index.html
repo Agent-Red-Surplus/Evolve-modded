@@ -26,7 +26,6 @@
             height: auto !important;
         }
 
-        /* Keep the left sidebar column contained with its own scrolling */
         #resources {
             max-height: calc(100vh - 4.5rem) !important;
             overflow-y: auto !important;
@@ -34,7 +33,6 @@
             padding-right: 4px;
         }
 
-        /* Target the automation side container and dropdown menus */
         #autoScriptContainer,
         div[id*="script" i][id*="container" i],
         div[id*="auto" i][id*="container" i] {
@@ -46,7 +44,6 @@
             border-top: 1px solid rgba(255, 255, 255, 0.15);
         }
 
-        /* Scrollbar styling */
         #resources::-webkit-scrollbar,
         #autoScriptContainer::-webkit-scrollbar {
             width: 6px;
@@ -58,54 +55,10 @@
         }
     </style>
 
-    <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle + Anti-Scroll-Reset) -->
+    <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle + Bulletproof Kill-Switch) -->
     <script>
         (() => {
             "use strict";
-
-            // --- ANTI-SCROLL-SNAP GUARD ---
-            // Intercept programmatic resets to top (0,0) triggered by hover tooltips and focus events
-            const origScrollTo = window.scrollTo;
-            window.scrollTo = function(x, y) {
-                if (typeof x === "object" && x !== null) {
-                    if (x.top === 0 && window.scrollY > 15) return;
-                } else if ((x === 0 && y === 0) && window.scrollY > 15) {
-                    return;
-                }
-                return origScrollTo.apply(this, arguments);
-            };
-
-            const origScroll = window.scroll;
-            window.scroll = function(x, y) {
-                if (typeof x === "object" && x !== null) {
-                    if (x.top === 0 && window.scrollY > 15) return;
-                } else if ((x === 0 && y === 0) && window.scrollY > 15) {
-                    return;
-                }
-                return origScroll.apply(this, arguments);
-            };
-
-            // Stop Buefy/popper hover events from calling scrollIntoView on header elements
-            const origScrollIntoView = Element.prototype.scrollIntoView;
-            Element.prototype.scrollIntoView = function(...args) {
-                if (
-                    this.closest("#topBar") ||
-                    this.closest("#resources") ||
-                    this.id === "versionLog" ||
-                    this.id === "header"
-                ) {
-                    return;
-                }
-                return origScrollIntoView.apply(this, args);
-            };
-
-            // Prevent focus calls from snapping the viewport upward
-            const origFocus = HTMLElement.prototype.focus;
-            HTMLElement.prototype.focus = function(options) {
-                const safeOptions = Object.assign({}, options, { preventScroll: true });
-                return origFocus.call(this, safeOptions);
-            };
-            // --- ANTI-SCROLL-SNAP GUARD END ---
 
             const getState = (key, def) => {
                 try {
@@ -127,7 +80,125 @@
             let autoLoaded = false;
             let autoFetching = false;
             let autoBtn = null;
+            let isInjectingMod = false;
 
+            // Tracking sets for all timers and callbacks registered by the mod
+            const modIntervals = new Set();
+            const modTimeouts = new Set();
+            const modFunctions = new WeakSet();
+
+            // Helper to inspect stack traces
+            const isAutomationContext = (fn) => {
+                if (isInjectingMod) return true;
+                if (typeof fn === "function" && modFunctions.has(fn)) return true;
+                const stack = (new Error()).stack || "";
+                return (
+                    stack.includes("evolve_automation") ||
+                    stack.includes("evolve-automation") ||
+                    stack.includes("tampermonkey")
+                );
+            };
+
+            // 1. Intercept setInterval
+            const origSetInterval = window.setInterval;
+            window.setInterval = function(fn, delay, ...args) {
+                if (typeof fn === "function") {
+                    if (isAutomationContext(fn)) {
+                        modFunctions.add(fn);
+                        const gated = function(...innerArgs) {
+                            if (!autoEnabled) return;
+                            return fn.apply(this, innerArgs);
+                        };
+                        const id = origSetInterval.call(window, gated, delay, ...args);
+                        modIntervals.add(id);
+                        return id;
+                    }
+                }
+                return origSetInterval.call(window, fn, delay, ...args);
+            };
+
+            // 2. Intercept setTimeout (recursive loops)
+            const origSetTimeout = window.setTimeout;
+            window.setTimeout = function(fn, delay, ...args) {
+                if (typeof fn === "function") {
+                    if (isAutomationContext(fn)) {
+                        modFunctions.add(fn);
+                        const gated = function(...innerArgs) {
+                            if (!autoEnabled) return;
+                            return fn.apply(this, innerArgs);
+                        };
+                        const id = origSetTimeout.call(window, gated, delay, ...args);
+                        modTimeouts.add(id);
+                        return id;
+                    }
+                }
+                return origSetTimeout.call(window, fn, delay, ...args);
+            };
+
+            // 3. Intercept requestAnimationFrame
+            const origRAF = window.requestAnimationFrame;
+            window.requestAnimationFrame = function(fn) {
+                if (typeof fn === "function" && isAutomationContext(fn)) {
+                    modFunctions.add(fn);
+                    const gated = function(...innerArgs) {
+                        if (!autoEnabled) return;
+                        return fn.apply(this, innerArgs);
+                    };
+                    return origRAF.call(window, gated);
+                }
+                return origRAF.call(window, fn);
+            };
+
+            // 4. Intercept clicks triggered by automation
+            const origClick = HTMLElement.prototype.click;
+            HTMLElement.prototype.click = function(...args) {
+                if (!autoEnabled && isAutomationContext()) {
+                    return;
+                }
+                return origClick.apply(this, args);
+            };
+
+            // 5. Anti-scroll snap guard
+            const origScrollTo = window.scrollTo;
+            window.scrollTo = function(x, y) {
+                if (typeof x === "object" && x !== null) {
+                    if (x.top === 0 && window.scrollY > 15) return;
+                } else if ((x === 0 && y === 0) && window.scrollY > 15) {
+                    return;
+                }
+                return origScrollTo.apply(this, arguments);
+            };
+
+            const origScroll = window.scroll;
+            window.scroll = function(x, y) {
+                if (typeof x === "object" && x !== null) {
+                    if (x.top === 0 && window.scrollY > 15) return;
+                } else if ((x === 0 && y === 0) && window.scrollY > 15) {
+                    return;
+                }
+                return origScroll.apply(this, arguments);
+            };
+
+            const origScrollIntoView = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function(...args) {
+                if (
+                    this.closest("#topBar") ||
+                    this.closest("#resources") ||
+                    this.id === "versionLog" ||
+                    this.id === "header"
+                ) {
+                    return;
+                }
+                return origScrollIntoView.apply(this, args);
+            };
+
+            const origFocus = HTMLElement.prototype.focus;
+            HTMLElement.prototype.focus = function(options) {
+                const safeOptions = Object.assign({}, options, { preventScroll: true });
+                return origFocus.call(this, safeOptions);
+            };
+
+            // --- HIDE STYLES ---
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
@@ -138,33 +209,6 @@
                     display: none !important;
                 }
             `;
-
-            // Freeze Evolve Automation timers/clicks while autoEnabled is false
-            const origSetInterval = window.setInterval;
-            window.setInterval = function(fn, delay, ...args) {
-                if (typeof fn === "function") {
-                    const stack = (new Error()).stack || "";
-                    if (stack.includes("evolve-automation-script") || stack.includes("eval")) {
-                        const gatedFn = function(...innerArgs) {
-                            if (!autoEnabled) return;
-                            return fn.apply(this, innerArgs);
-                        };
-                        return origSetInterval.call(window, gatedFn, delay, ...args);
-                    }
-                }
-                return origSetInterval.call(window, fn, delay, ...args);
-            };
-
-            const origClick = HTMLElement.prototype.click;
-            HTMLElement.prototype.click = function(...args) {
-                if (!autoEnabled) {
-                    const stack = (new Error()).stack || "";
-                    if (stack.includes("evolve-automation-script") || stack.includes("eval")) {
-                        return;
-                    }
-                }
-                return origClick.apply(this, args);
-            };
 
             const syncAutomationMasterSwitch = (enable) => {
                 if (!enable) {
@@ -214,8 +258,16 @@
                     .then(code => {
                         const s = document.createElement("script");
                         s.id = "evolve-automation-script";
-                        s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
+                        // Wrap script in an explicit named closure to ensure stack traces identify it
+                        const wrappedCode = `\n//# sourceURL=evolve_automation.user.js\n(() => {\n${code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "")}\n})();`;
+                        s.textContent = wrappedCode;
+
+                        isInjectingMod = true;
                         document.head.appendChild(s);
+                        setTimeout(() => {
+                            isInjectingMod = false;
+                        }, 500);
+
                         autoLoaded = true;
                         autoFetching = false;
                         setTimeout(() => {
