@@ -19,7 +19,7 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Live Mod Loader (Preserves Resource Dropdown + Clean Disable) -->
+    <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle) -->
     <script>
         (() => {
             "use strict";
@@ -45,45 +45,31 @@
             let autoBtn = null;
 
             // --- UPDATED DISABLE LOGIC START ---
+            const baselineNodes = new WeakSet();
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
-                [data-ea-hidden="true"] {
+                [data-auto-mod-node="true"],
+                [id*="automation" i],
+                [class*="automation" i] {
                     display: none !important;
                 }
             `;
 
-            // Find only Evolve Automation's UI elements (tabs, settings panel, and resource quick-toggle dropdown)
-            const toggleAutomationUI = (show) => {
-                // 1. Main settings tab & content
-                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
-                    if (/automation/i.test(li.textContent)) {
-                        if (show) li.removeAttribute("data-ea-hidden");
-                        else li.setAttribute("data-ea-hidden", "true");
+            // Tag every element added to the page after Evolve Automation is injected
+            const tagAutomationNodes = () => {
+                document.querySelectorAll("body *").forEach(el => {
+                    if (
+                        !baselineNodes.has(el) &&
+                        !el.closest("#mod-top-bar-wrapper") &&
+                        el.id !== "customSpeed"
+                    ) {
+                        el.setAttribute("data-auto-mod-node", "true");
                     }
                 });
-
-                // 2. Automation panels & quick-enable dropdown under #resources
-                document.querySelectorAll('[id*="automation" i], [id*="auto_" i], #resources .dropdown, #resources select').forEach(el => {
-                    // Skip native game elements inside #resources (like market/crate controls if any) by checking for EA markers
-                    const isNativeResource = el.closest("#resStorage") || el.closest("#market") || el.id === "resources";
-                    if (isNativeResource) return;
-
-                    if (show) el.removeAttribute("data-ea-hidden");
-                    else el.setAttribute("data-ea-hidden", "true");
-                });
-
-                // 3. Switch away from Automation tab if user is viewing it when disabling
-                if (!show) {
-                    const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
-                    if (activeTab && /automation/i.test(activeTab.textContent)) {
-                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-ea-hidden="true"]) a');
-                        if (firstTab) origClick.call(firstTab);
-                    }
-                }
             };
 
-            // Gate Evolve Automation's timers and clicks while autoEnabled is false
+            // Freeze Evolve Automation's timers and clicks while autoEnabled is false
             const origSetInterval = window.setInterval;
             window.setInterval = function(fn, delay, ...args) {
                 if (typeof fn === "function") {
@@ -109,6 +95,19 @@
                 }
                 return origClick.apply(this, args);
             };
+
+            const syncAutomationMasterSwitch = (enable) => {
+                tagAutomationNodes();
+
+                // If currently viewing an Automation tab when disabling, switch back to the first visible game tab
+                if (!enable) {
+                    const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
+                    if (activeTab && (activeTab.hasAttribute("data-auto-mod-node") || /auto/i.test(activeTab.textContent))) {
+                        const firstTab = document.querySelector('.b-tabs .tabs li:not([data-auto-mod-node="true"]) a');
+                        if (firstTab) origClick.call(firstTab);
+                    }
+                }
+            };
             // --- UPDATED DISABLE LOGIC END ---
 
             const updateAutoButton = () => {
@@ -129,7 +128,7 @@
 
                 if (!enable) {
                     if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
-                    toggleAutomationUI(false);
+                    syncAutomationMasterSwitch(false);
                     updateAutoButton();
                     return;
                 }
@@ -138,10 +137,13 @@
                 if (hideStyle.parentNode) hideStyle.parentNode.removeChild(hideStyle);
 
                 if (autoLoaded) {
-                    toggleAutomationUI(true);
+                    syncAutomationMasterSwitch(true);
                     updateAutoButton();
                     return;
                 }
+
+                // Snapshot existing game DOM nodes right before injecting Automation
+                document.querySelectorAll("body *").forEach(el => baselineNodes.add(el));
 
                 autoFetching = true;
                 updateAutoButton();
@@ -154,12 +156,13 @@
                         document.head.appendChild(s);
                         autoLoaded = true;
                         autoFetching = false;
-                        if (!autoEnabled) {
-                            setTimeout(() => {
+                        setTimeout(() => {
+                            tagAutomationNodes();
+                            if (!autoEnabled) {
                                 if (!hideStyle.parentNode) document.head.appendChild(hideStyle);
-                                toggleAutomationUI(false);
-                            }, 400);
-                        }
+                                syncAutomationMasterSwitch(false);
+                            }
+                        }, 400);
                         updateAutoButton();
                     })
                     .catch(() => {
@@ -217,7 +220,7 @@
                 const topBar = document.querySelector("#topBar");
                 const mainTab = document.querySelector(".b-tabs .tabs ul");
                 if (!versionLog || !topBar || !topBar.__vue__ || !mainTab) return;
-                origClearInterval.call(window, bootTimer);
+                clearInterval(bootTimer);
 
                 vueMethod = topBar.__vue__;
 
