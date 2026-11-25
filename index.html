@@ -19,11 +19,11 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Mod Manager, Tampermonkey Shims & Speed Multiplier -->
+    <!-- Live Mod Loader (No-Refresh Toggle + Auto-First Ordering) -->
     <script>
         (() => {
             "use strict";
-            const getModState = (key, def) => {
+            const getState = (key, def) => {
                 try {
                     const val = JSON.parse(window.localStorage.getItem(key));
                     return val === null ? def : val;
@@ -31,95 +31,198 @@
                     return def;
                 }
             };
-            const setModState = (key, val) => {
+            const setState = (key, val) => {
                 window.localStorage.setItem(key, JSON.stringify(val));
             };
 
-            // Tampermonkey API polyfills required by Evolve Automation
-            window.unsafeWindow = window;
-            window.GM_info = { script: { version: "local" } };
-            window.GM_getValue = (key, def) => getModState("ea_gm_" + key, def);
-            window.GM_setValue = (key, val) => setModState("ea_gm_" + key, val);
-            window.GM_deleteValue = (key) => window.localStorage.removeItem("ea_gm_" + key);
-            window.GM_listValues = () => Object.keys(window.localStorage)
-                .filter(k => k.startsWith("ea_gm_"))
-                .map(k => k.slice(6));
-            window.GM_addStyle = (css) => {
-                const style = document.createElement("style");
-                style.textContent = css;
-                document.head.appendChild(style);
-                return style;
+            let autoEnabled = getState("mod_enable_automation", true);
+            let speedEnabled = getState("mod_enable_speed", true);
+            let menuVisible = getState("mod_menu_visible", true);
+            let savedSpeed = getState("customSpeed", 1);
+
+            let autoInjected = false;
+            let speedReady = false;
+            let fromScript = false;
+            let vueMethod = null;
+            let speedSpan = null;
+
+            // Hook Worker.prototype.postMessage early, but keep active multiplier at 1 until Speed is ready
+            const oldPost = Worker.prototype.postMessage;
+            Worker.prototype.postMessage = function(...args) {
+                const activeMultiplier = (speedEnabled && speedReady) ? savedSpeed : 1;
+                if (args[0] && args[0].period) {
+                    args[0].period = args[0].period / activeMultiplier;
+                }
+                oldPost.apply(this, args);
+                if (fromScript) {
+                    setTimeout(() => {
+                        if (vueMethod) vueMethod.pause();
+                    }, 0);
+                    fromScript = false;
+                }
             };
 
-            window.__evolveMods = {
-                automation: getModState("mod_enable_automation", true),
-                speed: getModState("mod_enable_speed", true),
-                getModState,
-                setModState
+            const applySpeedWorker = () => {
+                if (vueMethod && !vueMethod._data.s.pause) {
+                    fromScript = true;
+                    vueMethod.pause();
+                }
             };
 
-            if (window.__evolveMods.speed) {
-                let customSpeed = getModState("customSpeed", 1);
-                let fromScript = false;
-                let vueMethod;
+            const updateSpeedUI = () => {
+                if (!speedSpan) return;
+                speedSpan.style.display = speedEnabled ? "" : "none";
+                speedSpan.textContent = `speed ×${savedSpeed}`;
+            };
 
-                const oldPost = Worker.prototype.postMessage;
-                Worker.prototype.postMessage = function(...args) {
-                    if (args[0] && args[0].period) {
-                        args[0].period = args[0].period / customSpeed;
+            // Toggle Evolve Automation UI & execution live without reloading
+            const setAutomationLive = (enable) => {
+                autoEnabled = enable;
+                setState("mod_enable_automation", enable);
+
+                if (enable && !autoInjected) {
+                    autoInjected = true;
+                    fetch("https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=" + Date.now())
+                        .then(r => r.text())
+                        .then(t => {
+                            const s = document.createElement("script");
+                            s.id = "evolve-automation-script";
+                            s.textContent = t.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
+                            document.head.appendChild(s);
+                            console.log("Evolve Automation Injected!");
+                        });
+                    return;
+                }
+
+                // Show/hide Automation tabs & pause/resume its master loop if already injected
+                document.querySelectorAll('[id*="automation"], [id*="auto_"], .automation-tab, [data-automation]').forEach(el => {
+                    el.style.display = enable ? "" : "none";
+                });
+                document.querySelectorAll(".b-tabs .tabs li").forEach(li => {
+                    if (/auto/i.test(li.textContent)) {
+                        li.style.display = enable ? "" : "none";
                     }
-                    oldPost.apply(this, args);
-                    if (fromScript) {
-                        setTimeout(() => {
-                            if (vueMethod) {
-                                vueMethod.pause();
-                            }
-                        }, 0);
-                        fromScript = false;
+                });
+                // Flip internal Vue pause/enabled flag if exposed by Evolve Automation
+                try {
+                    const autoEl = document.querySelector("#automation, [id*='automation']");
+                    if (autoEl && autoEl.__vue__ && autoEl.__vue__._data) {
+                        if ("enabled" in autoEl.__vue__._data) autoEl.__vue__._data.enabled = enable;
+                        if ("paused" in autoEl.__vue__._data) autoEl.__vue__._data.paused = !enable;
                     }
-                };
+                } catch {}
+            };
 
-                const hijackWorker = () => {
-                    if (vueMethod && !vueMethod._data.s.pause) {
-                        fromScript = true;
-                        vueMethod.pause();
-                    }
-                };
+            // Toggle Speed Multiplier live without reloading
+            const setSpeedLive = (enable) => {
+                speedEnabled = enable;
+                setState("mod_enable_speed", enable);
+                updateSpeedUI();
+                applySpeedWorker();
+            };
 
-                const updateSpeedDisplay = (speedSpan) => {
-                    speedSpan.textContent = `speed ×${customSpeed}`;
-                };
+            // Wait for game tabs to render, load Auto Mod FIRST, then initialize Speed Mod & Controls
+            const bootTimer = setInterval(() => {
+                const versionLog = document.getElementById("versionLog");
+                const topBar = document.querySelector("#topBar");
+                const mainTab = document.querySelector(".b-tabs .tabs ul");
+                if (!versionLog || !topBar || !topBar.__vue__ || !mainTab) return;
+                clearInterval(bootTimer);
 
-                const timer = setInterval(() => {
-                    const versionLog = document.getElementById("versionLog");
-                    const topBar = document.querySelector("#topBar");
-                    if (!versionLog || !topBar || !topBar.__vue__) {
-                        return;
-                    }
-                    clearInterval(timer);
+                vueMethod = topBar.__vue__;
 
-                    const speedSpan = document.createElement("span");
+                // Step 1: Load Evolve Automation FIRST if enabled
+                if (autoEnabled) {
+                    setAutomationLive(true);
+                }
+
+                // Step 2: Initialize Speed Multiplier right after Auto Mod starts
+                setTimeout(() => {
+                    speedSpan = document.createElement("span");
                     speedSpan.id = "customSpeed";
                     speedSpan.className = "version";
                     speedSpan.style.cursor = "pointer";
                     speedSpan.style.marginRight = "0.75rem";
-                    updateSpeedDisplay(speedSpan);
-
                     speedSpan.addEventListener("click", () => {
-                        const input = prompt("Multiply default game speed by:", customSpeed);
+                        const input = prompt("Multiply default game speed by:", savedSpeed);
                         if (input === null) return;
-                        const newSpeed = Math.max(Number(input) || 1, 1);
-                        customSpeed = newSpeed;
-                        setModState("customSpeed", newSpeed);
-                        updateSpeedDisplay(speedSpan);
-                        hijackWorker();
+                        savedSpeed = Math.max(Number(input) || 1, 1);
+                        setState("customSpeed", savedSpeed);
+                        updateSpeedUI();
+                        applySpeedWorker();
                     });
 
                     versionLog.parentNode.insertBefore(speedSpan, versionLog);
-                    vueMethod = topBar.__vue__;
-                    hijackWorker();
-                }, 100);
-            }
+                    speedReady = true;
+                    updateSpeedUI();
+                    if (speedEnabled) applySpeedWorker();
+                }, 400);
+
+                // Step 3: Build Top-Bar Show/Hide Menu & Live Toggles
+                const wrapper = document.createElement("span");
+                wrapper.className = "version";
+                wrapper.style.marginRight = "0.75rem";
+                wrapper.style.display = "inline-flex";
+                wrapper.style.alignItems = "center";
+                wrapper.style.gap = "6px";
+
+                const menuItems = document.createElement("span");
+                menuItems.style.display = menuVisible ? "inline-flex" : "none";
+                menuItems.style.gap = "6px";
+
+                const autoBtn = document.createElement("span");
+                autoBtn.style.cursor = "pointer";
+                autoBtn.style.textDecoration = "underline";
+                const refreshAutoLabel = () => {
+                    autoBtn.textContent = `Auto:${autoEnabled ? "ON" : "OFF"}`;
+                    autoBtn.style.opacity = autoEnabled ? "1" : "0.55";
+                };
+                refreshAutoLabel();
+                autoBtn.addEventListener("click", () => {
+                    setAutomationLive(!autoEnabled);
+                    refreshAutoLabel();
+                });
+
+                const speedBtn = document.createElement("span");
+                speedBtn.style.cursor = "pointer";
+                speedBtn.style.textDecoration = "underline";
+                const refreshSpeedLabel = () => {
+                    speedBtn.textContent = `Speed:${speedEnabled ? "ON" : "OFF"}`;
+                    speedBtn.style.opacity = speedEnabled ? "1" : "0.55";
+                };
+                refreshSpeedLabel();
+                speedBtn.addEventListener("click", () => {
+                    setSpeedLive(!speedEnabled);
+                    refreshSpeedLabel();
+                });
+
+                const toggleMenuBtn = document.createElement("span");
+                toggleMenuBtn.style.cursor = "pointer";
+                toggleMenuBtn.title = "Show/Hide Mod Menu (Alt+M)";
+                const refreshMenuVis = () => {
+                    menuItems.style.display = menuVisible ? "inline-flex" : "none";
+                    toggleMenuBtn.textContent = menuVisible ? "[Hide Mods]" : "[Mods]";
+                };
+                refreshMenuVis();
+                toggleMenuBtn.addEventListener("click", () => {
+                    menuVisible = !menuVisible;
+                    setState("mod_menu_visible", menuVisible);
+                    refreshMenuVis();
+                });
+
+                window.addEventListener("keydown", (e) => {
+                    if (e.altKey && e.key.toLowerCase() === "m") {
+                        e.preventDefault();
+                        toggleMenuBtn.click();
+                    }
+                });
+
+                menuItems.appendChild(autoBtn);
+                menuItems.appendChild(speedBtn);
+                wrapper.appendChild(menuItems);
+                wrapper.appendChild(toggleMenuBtn);
+                versionLog.parentNode.insertBefore(wrapper, versionLog);
+            }, 200);
         })();
     </script>
 
@@ -164,101 +267,6 @@
         function gtag(){dataLayer.push(arguments);}
         gtag('js', new Date());
         gtag('config', 'G-CPC46V71CB');
-    </script>
-
-    <!-- Load Evolve Automation & Mount Mod Toggle Outside Game UI -->
-    <script>
-        window.addEventListener('load', () => {
-            const mods = window.__evolveMods;
-
-            // Mount control box directly onto <html> so Vue doesn't overwrite or block it
-            const box = document.createElement('div');
-            box.id = 'mod-control-box';
-            box.style.cssText = [
-                'position: fixed',
-                'bottom: 12px',
-                'right: 12px',
-                'z-index: 2147483647',
-                'background: #1e1e24',
-                'color: #f0f0f0',
-                'border: 1px solid #666',
-                'border-radius: 6px',
-                'padding: 6px 10px',
-                'font-family: Lato, sans-serif',
-                'font-size: 12px',
-                'box-shadow: 0 2px 10px rgba(0,0,0,0.6)',
-                'pointer-events: auto'
-            ].join(';');
-
-            box.innerHTML = `
-                <div id="mod-control-header" style="cursor:pointer;font-weight:bold;user-select:none;">Mods ▲</div>
-                <div id="mod-control-panel" style="display:none;margin-top:6px;padding-top:6px;border-top:1px solid #444;flex-direction:column;gap:6px;">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">
-                        <input type="checkbox" id="toggle-mod-automation">
-                        <span>Evolve Automation</span>
-                    </label>
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">
-                        <input type="checkbox" id="toggle-mod-speed">
-                        <span>Speed Multiplier</span>
-                    </label>
-                </div>
-            `;
-            document.documentElement.appendChild(box);
-
-            const header = document.getElementById('mod-control-header');
-            const panel = document.getElementById('mod-control-panel');
-            const autoBox = document.getElementById('toggle-mod-automation');
-            const speedBox = document.getElementById('toggle-mod-speed');
-
-            autoBox.checked = mods.automation;
-            speedBox.checked = mods.speed;
-
-            header.addEventListener('click', () => {
-                const isOpen = panel.style.display === 'flex';
-                panel.style.display = isOpen ? 'none' : 'flex';
-                header.textContent = isOpen ? 'Mods ▲' : 'Mods ▼';
-            });
-
-            const reloadWithSave = () => {
-                if (typeof window.exportGame === 'function') {
-                    try { window.exportGame(); } catch {}
-                }
-                window.location.reload();
-            };
-
-            autoBox.addEventListener('change', (e) => {
-                mods.setModState('mod_enable_automation', e.target.checked);
-                reloadWithSave();
-            });
-
-            speedBox.addEventListener('change', (e) => {
-                mods.setModState('mod_enable_speed', e.target.checked);
-                reloadWithSave();
-            });
-
-            // Wait until #versionLog exists (game finished mounting) before injecting Automation
-            if (mods.automation) {
-                const waitForGame = setInterval(() => {
-                    if (!document.getElementById('versionLog')) return;
-                    clearInterval(waitForGame);
-
-                    fetch('https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=' + Date.now())
-                        .then(r => {
-                            if (!r.ok) throw new Error('HTTP ' + r.status);
-                            return r.text();
-                        })
-                        .then(code => {
-                            const s = document.createElement('script');
-                            s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, '');
-                            document.head.appendChild(s);
-                        })
-                        .catch(err => {
-                            header.textContent = 'Mods (Auto blocked) ▲';
-                            console.error('Failed to load Evolve Automation:', err);
-                        });
-                }, 200);
-            }
-        });
     </script>
 </body>
 </html>
