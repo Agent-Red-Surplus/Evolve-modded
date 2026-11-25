@@ -19,41 +19,94 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Custom Scroll Styles for Auto Quick Settings & Side Column -->
+    <!-- Scroll & Layout Protection -->
     <style>
-        /* Allow the entire page and side columns to scroll naturally */
         html, body {
             overflow-y: auto !important;
             height: auto !important;
         }
 
-        /* Give the quick-settings container its own scroll area so it never pushes the whole page */
-        #autoScriptContainer {
-            max-height: 45vh !important;
+        /* Keep the left sidebar column contained with its own scrolling */
+        #resources {
+            max-height: calc(100vh - 4.5rem) !important;
             overflow-y: auto !important;
             overflow-x: hidden !important;
             padding-right: 4px;
-            margin-top: 8px;
+        }
+
+        /* Target the automation side container and dropdown menus */
+        #autoScriptContainer,
+        div[id*="script" i][id*="container" i],
+        div[id*="auto" i][id*="container" i] {
+            max-height: 55vh !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            margin-top: 6px;
+            padding-right: 4px;
             border-top: 1px solid rgba(255, 255, 255, 0.15);
         }
 
-        /* Custom scrollbar styling to match Evolve's dark theme */
+        /* Scrollbar styling */
+        #resources::-webkit-scrollbar,
         #autoScriptContainer::-webkit-scrollbar {
             width: 6px;
         }
+        #resources::-webkit-scrollbar-thumb,
         #autoScriptContainer::-webkit-scrollbar-thumb {
             background: rgba(255, 255, 255, 0.3);
             border-radius: 3px;
         }
-        #autoScriptContainer::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.5);
-        }
     </style>
 
-    <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle) -->
+    <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle + Anti-Scroll-Reset) -->
     <script>
         (() => {
             "use strict";
+
+            // --- ANTI-SCROLL-SNAP GUARD ---
+            // Intercept programmatic resets to top (0,0) triggered by hover tooltips and focus events
+            const origScrollTo = window.scrollTo;
+            window.scrollTo = function(x, y) {
+                if (typeof x === "object" && x !== null) {
+                    if (x.top === 0 && window.scrollY > 15) return;
+                } else if ((x === 0 && y === 0) && window.scrollY > 15) {
+                    return;
+                }
+                return origScrollTo.apply(this, arguments);
+            };
+
+            const origScroll = window.scroll;
+            window.scroll = function(x, y) {
+                if (typeof x === "object" && x !== null) {
+                    if (x.top === 0 && window.scrollY > 15) return;
+                } else if ((x === 0 && y === 0) && window.scrollY > 15) {
+                    return;
+                }
+                return origScroll.apply(this, arguments);
+            };
+
+            // Stop Buefy/popper hover events from calling scrollIntoView on header elements
+            const origScrollIntoView = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function(...args) {
+                if (
+                    this.closest("#topBar") ||
+                    this.closest("#resources") ||
+                    this.id === "versionLog" ||
+                    this.id === "header"
+                ) {
+                    return;
+                }
+                return origScrollIntoView.apply(this, args);
+            };
+
+            // Prevent focus calls from snapping the viewport upward
+            const origFocus = HTMLElement.prototype.focus;
+            HTMLElement.prototype.focus = function(options) {
+                const safeOptions = Object.assign({}, options, { preventScroll: true });
+                return origFocus.call(this, safeOptions);
+            };
+            // --- ANTI-SCROLL-SNAP GUARD END ---
+
             const getState = (key, def) => {
                 try {
                     const val = JSON.parse(window.localStorage.getItem(key));
@@ -75,7 +128,6 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // --- NARROW TARGETING HIDE STYLE ---
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
@@ -87,7 +139,7 @@
                 }
             `;
 
-            // Freeze Evolve Automation's timers and clicks while autoEnabled is false
+            // Freeze Evolve Automation timers/clicks while autoEnabled is false
             const origSetInterval = window.setInterval;
             window.setInterval = function(fn, delay, ...args) {
                 if (typeof fn === "function") {
@@ -147,7 +199,6 @@
                     return;
                 }
 
-                // Enabling
                 if (hideStyle.parentNode) hideStyle.parentNode.removeChild(hideStyle);
 
                 if (autoLoaded) {
@@ -234,12 +285,10 @@
 
                 vueMethod = topBar.__vue__;
 
-                // Step 1: Load Evolve Automation FIRST if enabled
                 if (autoEnabled) {
                     setAutomationLive(true);
                 }
 
-                // Step 2: Initialize Speed Multiplier
                 setTimeout(() => {
                     speedSpan = document.createElement("span");
                     speedSpan.id = "customSpeed";
@@ -261,7 +310,6 @@
                     if (speedEnabled) applySpeedWorker();
                 }, 500);
 
-                // Step 3: Build Top-Bar Mod Menu
                 const wrapper = document.createElement("span");
                 wrapper.id = "mod-top-bar-wrapper";
                 wrapper.className = "version";
