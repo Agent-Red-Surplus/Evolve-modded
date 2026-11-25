@@ -18,6 +18,95 @@
     <script src="https://unpkg.com/sortablejs@1.10.2/Sortable.min.js" integrity="sha384-6qM1TfKo1alBw3Uw9AWXnaY5h0G3ScEjxtUm4TwRJm7HRmDX8UfiDleTAEEg5vIe" crossorigin="anonymous"></script>
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
+
+    <!-- Mod Manager & Speed Multiplier (Runs before main.js to hook game Worker) -->
+    <script>
+        (() => {
+            "use strict";
+            const getModState = (key, def) => {
+                try {
+                    const val = JSON.parse(window.localStorage.getItem(key));
+                    return val === null ? def : val;
+                } catch {
+                    return def;
+                }
+            };
+            const setModState = (key, val) => {
+                window.localStorage.setItem(key, JSON.stringify(val));
+            };
+
+            window.__evolveMods = {
+                automation: getModState("mod_enable_automation", true),
+                speed: getModState("mod_enable_speed", true),
+                getModState,
+                setModState
+            };
+
+            if (window.__evolveMods.speed) {
+                let customSpeed = getModState("customSpeed", 1);
+                let fromScript = false;
+                let vueMethod;
+
+                const oldPost = Worker.prototype.postMessage;
+                Worker.prototype.postMessage = function(...args) {
+                    if (args[0] && args[0].period) {
+                        args[0].period = args[0].period / customSpeed;
+                    }
+                    oldPost.apply(this, args);
+                    if (fromScript) {
+                        setTimeout(() => {
+                            if (vueMethod) {
+                                vueMethod.pause();
+                            }
+                        }, 0);
+                        fromScript = false;
+                    }
+                };
+
+                const hijackWorker = () => {
+                    if (vueMethod && !vueMethod._data.s.pause) {
+                        fromScript = true;
+                        vueMethod.pause();
+                    }
+                };
+
+                const updateSpeedDisplay = (speedSpan) => {
+                    speedSpan.textContent = `speed ×${customSpeed}`;
+                };
+
+                const timer = setInterval(() => {
+                    const versionLog = document.getElementById("versionLog");
+                    const topBar = document.querySelector("#topBar");
+                    if (!versionLog || !topBar || !topBar.__vue__) {
+                        return;
+                    }
+                    clearInterval(timer);
+
+                    const speedSpan = document.createElement("span");
+                    speedSpan.id = "customSpeed";
+                    speedSpan.className = "version";
+                    speedSpan.style.cursor = "pointer";
+                    speedSpan.style.marginRight = "0.75rem";
+                    updateSpeedDisplay(speedSpan);
+
+                    speedSpan.addEventListener("click", () => {
+                        const input = prompt("Multiply default game speed by:", customSpeed);
+                        if (input === null) return;
+                        const newSpeed = Math.max(Number(input) || 1, 1);
+                        customSpeed = newSpeed;
+                        setModState("customSpeed", newSpeed);
+                        updateSpeedDisplay(speedSpan);
+                        hijackWorker();
+                    });
+
+                    versionLog.parentNode.insertBefore(speedSpan, versionLog);
+                    vueMethod = topBar.__vue__;
+                    hijackWorker();
+                }, 100);
+            }
+        })();
+    </script>
+
     <script src="evolve/main.js" type="module"></script>
 </head>
 <body>
@@ -50,8 +139,56 @@
                 transform: rotate(360deg);
             }
         }
+        #mod-control-box {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            z-index: 9999;
+            background: rgba(25, 25, 30, 0.92);
+            color: #f0f0f0;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-family: 'Lato', sans-serif;
+            font-size: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+        }
+        #mod-control-box summary {
+            cursor: pointer;
+            font-weight: bold;
+            user-select: none;
+        }
+        #mod-control-panel {
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid #444;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        #mod-control-panel label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
     </style>
     <div class="loading"><div class="lds-dual-ring"></div></div>
+
+    <!-- On-Demand Mod Toggle Panel -->
+    <details id="mod-control-box">
+        <summary>Mods</summary>
+        <div id="mod-control-panel">
+            <label>
+                <input type="checkbox" id="toggle-mod-automation">
+                Evolve Automation
+            </label>
+            <label>
+                <input type="checkbox" id="toggle-mod-speed">
+                Speed Multiplier
+            </label>
+        </div>
+    </details>
 
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-CPC46V71CB"></script>
     <script>
@@ -59,6 +196,38 @@
         function gtag(){dataLayer.push(arguments);}
         gtag('js', new Date());
         gtag('config', 'G-CPC46V71CB');
+    </script>
+
+    <!-- Load Evolve Automation & Wire Up Toggles -->
+    <script>
+        window.addEventListener('load', () => {
+            const mods = window.__evolveMods;
+            const autoBox = document.getElementById('toggle-mod-automation');
+            const speedBox = document.getElementById('toggle-mod-speed');
+
+            autoBox.checked = mods.automation;
+            speedBox.checked = mods.speed;
+
+            autoBox.addEventListener('change', (e) => {
+                mods.setModState('mod_enable_automation', e.target.checked);
+                window.location.reload();
+            });
+
+            speedBox.addEventListener('change', (e) => {
+                mods.setModState('mod_enable_speed', e.target.checked);
+                window.location.reload();
+            });
+
+            if (mods.automation) {
+                fetch('https://cdn.jsdelivr.net/gh/lamia-zamia/Evolve-Automation@master/evolve_automation.user.js?v=' + Date.now())
+                    .then(r => r.text())
+                    .then(code => {
+                        const s = document.createElement('script');
+                        s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, '');
+                        document.head.appendChild(s);
+                    });
+            }
+        });
     </script>
 </body>
 </html>
