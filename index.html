@@ -19,9 +19,35 @@
     <script src="https://unpkg.com/chart.js@3.8.2/dist/chart.min.js" integrity="sha384-z7c1KnSCkMpfoib43Lq1v2pokQC8cdqBWmH2qiyH2KkmNv60hACtZUjoCEkp1Y08" crossorigin="anonymous"></script>
     <script src="lib/lz-string.min.js"></script>
 
-    <!-- Scroll safeguard -->
+    <!-- Custom Scroll Styles for Auto Quick Settings & Side Column -->
     <style>
-        html, body { overflow-y: auto !important; }
+        /* Allow the entire page and side columns to scroll naturally */
+        html, body {
+            overflow-y: auto !important;
+            height: auto !important;
+        }
+
+        /* Give the quick-settings container its own scroll area so it never pushes the whole page */
+        #autoScriptContainer {
+            max-height: 45vh !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            padding-right: 4px;
+            margin-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        /* Custom scrollbar styling to match Evolve's dark theme */
+        #autoScriptContainer::-webkit-scrollbar {
+            width: 6px;
+        }
+        #autoScriptContainer::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+        }
+        #autoScriptContainer::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.5);
+        }
     </style>
 
     <!-- Live Mod Loader (Vue-Safe Hide/Pause + Single-Click Toggle) -->
@@ -49,12 +75,14 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // --- DISABLE LOGIC (narrowed: no more tagging of game nodes) ---
+            // --- NARROW TARGETING HIDE STYLE ---
             const hideStyle = document.createElement("style");
             hideStyle.id = "mod-hide-automation-style";
             hideStyle.textContent = `
+                #autoScriptContainer,
                 [id^="script_"],
-                [class*="script_"] {
+                [class*="script_"],
+                #s-quick-prestige-options {
                     display: none !important;
                 }
             `;
@@ -87,16 +115,14 @@
             };
 
             const syncAutomationMasterSwitch = (enable) => {
-                // If an Automation tab is active when disabling, go back to the first game tab
                 if (!enable) {
                     const activeTab = document.querySelector(".b-tabs .tabs li.is-active");
                     if (activeTab && /auto/i.test(activeTab.textContent)) {
-                        const firstTab = document.querySelector(".b-tabs .tabs li a");
+                        const firstTab = document.querySelector('.b-tabs .tabs li a');
                         if (firstTab) origClick.call(firstTab);
                     }
                 }
             };
-            // --- DISABLE LOGIC END ---
 
             const updateAutoButton = () => {
                 if (!autoBtn) return;
@@ -157,7 +183,7 @@
                     });
             };
 
-            // Speed Multiplier Setup (runs after Auto Mod starts)
+            // Speed Multiplier Setup
             let speedReady = false;
             let fromScript = false;
             let vueMethod = null;
@@ -198,7 +224,7 @@
                 applySpeedWorker();
             };
 
-            // Boot sequence: Wait for game UI, load Auto Mod FIRST, then Speed Mod & Top-Bar Menu
+            // Boot sequence
             const bootTimer = origSetInterval.call(window, () => {
                 const versionLog = document.getElementById("versionLog");
                 const topBar = document.querySelector("#topBar");
@@ -213,7 +239,7 @@
                     setAutomationLive(true);
                 }
 
-                // Step 2: Initialize Speed Multiplier right after
+                // Step 2: Initialize Speed Multiplier
                 setTimeout(() => {
                     speedSpan = document.createElement("span");
                     speedSpan.id = "customSpeed";
@@ -235,7 +261,7 @@
                     if (speedEnabled) applySpeedWorker();
                 }, 500);
 
-                // Step 3: Build Top-Bar Show/Hide Menu & Single-Click Toggles
+                // Step 3: Build Top-Bar Mod Menu
                 const wrapper = document.createElement("span");
                 wrapper.id = "mod-top-bar-wrapper";
                 wrapper.className = "version";
@@ -322,14 +348,10 @@
             border: 5px solid #fff;
             border-color: #fff transparent #fff transparent;
             animation: lds-dual-ring 1.2s linear infinite;
-            }
-            @keyframes lds-dual-ring {
-            0% {
-                transform: rotate(0deg);
-            }
-            100% {
-                transform: rotate(360deg);
-            }
+        }
+        @keyframes lds-dual-ring {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
     <div class="loading"><div class="lds-dual-ring"></div></div>
