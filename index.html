@@ -53,29 +53,48 @@
             let autoFetching = false;
             let autoBtn = null;
 
-            // Freeze Evolve Automation's timers and clicks while autoEnabled is false
+            // Context flag that tracks whenever Evolve Automation code or any timer it spawns is executing
+            let inAutoContext = false;
+            const pausedAutoCallbacks = [];
+
+            const wrapAutoCallback = (fn) => {
+                if (typeof fn !== "function") return fn;
+                return function(...innerArgs) {
+                    if (!autoEnabled) {
+                        // Queue the paused tick so resuming Auto:ON restarts its loop seamlessly
+                        pausedAutoCallbacks.push(() => fn.apply(this, innerArgs));
+                        return;
+                    }
+                    const prev = inAutoContext;
+                    inAutoContext = true;
+                    try {
+                        return fn.apply(this, innerArgs);
+                    } finally {
+                        inAutoContext = prev;
+                    }
+                };
+            };
+
             const origSetInterval = window.setInterval;
             window.setInterval = function(fn, delay, ...args) {
-                if (typeof fn === "function") {
-                    const stack = (new Error()).stack || "";
-                    if (stack.includes("evolve-automation-script") || stack.includes("eval")) {
-                        const gatedFn = function(...innerArgs) {
-                            if (!autoEnabled) return;
-                            return fn.apply(this, innerArgs);
-                        };
-                        return origSetInterval.call(window, gatedFn, delay, ...args);
-                    }
+                if (inAutoContext) {
+                    return origSetInterval.call(window, wrapAutoCallback(fn), delay, ...args);
                 }
                 return origSetInterval.call(window, fn, delay, ...args);
             };
 
+            const origSetTimeout = window.setTimeout;
+            window.setTimeout = function(fn, delay, ...args) {
+                if (inAutoContext) {
+                    return origSetTimeout.call(window, wrapAutoCallback(fn), delay, ...args);
+                }
+                return origSetTimeout.call(window, fn, delay, ...args);
+            };
+
             const origClick = HTMLElement.prototype.click;
             HTMLElement.prototype.click = function(...args) {
-                if (!autoEnabled) {
-                    const stack = (new Error()).stack || "";
-                    if (stack.includes("evolve-automation-script") || stack.includes("eval")) {
-                        return;
-                    }
+                if (!autoEnabled && inAutoContext) {
+                    return;
                 }
                 return origClick.apply(this, args);
             };
@@ -96,7 +115,17 @@
                 autoEnabled = enable;
                 setState("mod_enable_automation", enable);
 
-                if (!enable || autoLoaded) {
+                if (!enable) {
+                    updateAutoButton();
+                    return;
+                }
+
+                if (autoLoaded) {
+                    // Resume any setTimeout chains that were paused while Auto was OFF
+                    while (pausedAutoCallbacks.length > 0) {
+                        const resumeFn = pausedAutoCallbacks.shift();
+                        origSetTimeout.call(window, resumeFn, 0);
+                    }
                     updateAutoButton();
                     return;
                 }
@@ -109,7 +138,12 @@
                         const s = document.createElement("script");
                         s.id = "evolve-automation-script";
                         s.textContent = code.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
-                        document.head.appendChild(s);
+                        inAutoContext = true;
+                        try {
+                            document.head.appendChild(s);
+                        } finally {
+                            inAutoContext = false;
+                        }
                         autoLoaded = true;
                         autoFetching = false;
                         updateAutoButton();
@@ -136,7 +170,7 @@
                 }
                 oldPost.apply(this, args);
                 if (fromScript) {
-                    setTimeout(() => {
+                    origSetTimeout.call(window, () => {
                         if (vueMethod) vueMethod.pause();
                     }, 0);
                     fromScript = false;
@@ -179,7 +213,7 @@
                 }
 
                 // Step 2: Initialize Speed Multiplier right after
-                setTimeout(() => {
+                origSetTimeout.call(window, () => {
                     speedSpan = document.createElement("span");
                     speedSpan.id = "customSpeed";
                     speedSpan.className = "version";
